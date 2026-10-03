@@ -1,0 +1,93 @@
+name: sync-views
+
+# Sinkronisasi tampilan tautan terjadwal di GitHub Actions.
+#
+# CATATAN TEKNIS
+#  * 1 job = 1 alamat keluar (IP runner). Rotasi terjadi per JOB, bukan per tautan.
+#  * Penjadwalan GitHub tidak dapat diandalkan: jadwal padat (mis. */5) terukur sering
+#    dilewati. Karena itu pemicu utama berasal dari luar (Cloudflare Worker -> dispatch),
+#    dan satu pemicu menjalankan BANYAK job sekaligus lewat matrix.
+#  * Jangan tambahkan `| tail` pada langkah sinkronisasi: hasil akhirnya ikut terpotong.
+
+on:
+  workflow_dispatch:
+    inputs:
+      link:
+        description: "Tautan (kosongkan = ambil dari links.txt)"
+        required: false
+      views:
+        description: "jumlah proses sinkronisasi per job"
+        required: false
+        default: "1"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 job paralel = batas akun GitHub pada paket gratis.
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: siapkan runtime
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y xvfb x11-utils
+          python3 -m pip -q install --upgrade pip
+          python3 -m pip -q install playwright requests maxminddb
+          python3 -m playwright install --with-deps chromium
+          Xvfb :99 -screen 0 1920x1080x24 -ac -nolisten tcp -noreset &
+          sleep 3
+          xdpyinfo -display :99 >/dev/null && echo "display siap"
+
+      - name: pasang modul
+        run: |
+          tar xzf edge-kit.tar.gz --strip-components=1
+          grep -c . links.txt
+
+      - name: muat konfigurasi
+        env:
+          KIT_CONFIG: ${{ secrets.KIT_CONFIG }}
+        run: |
+          printf '%s' "$KIT_CONFIG" | base64 -d > proxies.txt
+          echo "konfigurasi: $(wc -l < proxies.txt) baris (isi tidak ditampilkan)"
+
+      - name: sinkronisasi (shard ${{ matrix.shard }})
+        env:
+          DISPLAY: ":99"
+        run: |
+          LINK="${{ github.event.inputs.link }}"
+          if [ -z "$LINK" ]; then
+            N=$(grep -c . links.txt)
+            PER=20
+            BATCHES=$(( (N + PER - 1) / PER ))
+            BATCH=$(( ($(date +%s) / 1200) % BATCHES ))
+            IDX=$(( (BATCH * PER + ${{ matrix.shard }} - 1) % N + 1 ))
+            LINK=$(sed -n "${IDX}p" links.txt)
+            echo "batch $((BATCH+1))/$BATCHES | idx ${IDX}/$N | shard ${{ matrix.shard }}"
+          fi
+          echo "shard ${{ matrix.shard }} | target: $LINK"
+          VIEWS="${{ github.event.inputs.views || '1' }}"
+          : > /tmp/view.log
+          for v in $(seq 1 $VIEWS); do
+            echo "--- proses $v/$VIEWS ---"
+            timeout 900 python3 relay_engine.py "$LINK" >> /tmp/view.log 2>&1
+          done
+          [ -s /tmp/view.log ] || echo "PERINGATAN: log kosong (mesin tidak start)" >&2
+          FINAL=$(grep -aPo '"final": "\K[^"]+' /tmp/view.log | tail -1)
+          OK=$(grep -aPo '"ok": \K\w+' /tmp/view.log | tail -1)
+          echo "status=$OK"
+          echo "tujuan=$FINAL"
+
+      - name: ringkasan (shard ${{ matrix.shard }})
+        if: always()
+        run: |
+          F=$(grep -aPo '"final": "\K[^"]+' /tmp/view.log 2>/dev/null | tail -1)
+          O=$(grep -aPo '"ok": \K\w+' /tmp/view.log 2>/dev/null | tail -1)
+          {
+            echo "### shard ${{ matrix.shard }}"
+            if [ "$O" = "true" ]; then echo "selesai -> ${F:-?}"; else echo "belum selesai (status=$O)"; fi
+          } >> $GITHUB_STEP_SUMMARY
