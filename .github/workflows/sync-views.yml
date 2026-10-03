@@ -72,6 +72,8 @@ jobs:
             echo "batch $((BATCH+1))/$BATCHES | idx ${IDX}/$N | shard ${{ matrix.shard }}"
           fi
           echo "shard ${{ matrix.shard }} | target: $LINK"
+          NEG=$(sed -n "${SL_SHARD}p" proxies.txt | grep -oP "\-country-\K[a-zA-Z]{2}" | head -1)
+          echo "negara=$NEG  (kredensial baris ${SL_SHARD})"
           VIEWS="${{ github.event.inputs.views || '1' }}"
           : > /tmp/view.log
           for v in $(seq 1 $VIEWS); do
