@@ -58,6 +58,8 @@ jobs:
       - name: sinkronisasi (shard ${{ matrix.shard }})
         env:
           DISPLAY: ":99"
+          # tiap shard mengambil kredensial keluar berbeda dari proxies.txt
+          SL_SHARD: ${{ matrix.shard }}
         run: |
           LINK="${{ github.event.inputs.link }}"
           if [ -z "$LINK" ]; then
